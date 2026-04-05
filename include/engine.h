@@ -12,7 +12,7 @@
 #include <functional>
 
 struct GenerateConfig {
-    int max_new_tokens       = 256;
+    int max_new_tokens       = 2048;
     SamplerConfig sampler    = {};
     bool print_stats         = true;
 

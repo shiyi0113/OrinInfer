@@ -9,7 +9,7 @@ struct ModelConfig {
     int32_t num_kv_heads      = 8;      // KV heads (GQA)
     int32_t head_dim          = 128;
     int32_t intermediate_size = 3072;
-    int32_t max_seq_len       = 4096;   // runtime cap (not model max)
+    int32_t max_seq_len       = 32768;   // runtime cap (not model max)
     float   rms_norm_eps      = 1e-6f;
     float   rope_theta        = 1000000.0f;
     bool    tie_embeddings    = true;

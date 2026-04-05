@@ -1,5 +1,7 @@
 #include "kernels.h"
 #include <cfloat>
+#include <stdexcept>
+#include <string>
 
 // GQA attention kernel.
 // Grid: (seq_len, num_heads) — one block per (query_token, query_head).
@@ -100,6 +102,11 @@ __global__ void attn_kernel(
 
 namespace kernels {
 
+// Max shared memory per block on SM 8.7 (Jetson Orin) is 164 KB.
+// scores[cache_len] + rdbuf[BLOCK_DIM] in float32.
+// Supports up to (164*1024/4 - 128) ≈ 41984 tokens per context.
+static constexpr size_t ATTN_MAX_SMEM = 163840; // 160 KB, leave 4 KB headroom
+
 void attention(
     __nv_bfloat16* out,
     const __nv_bfloat16* q,
@@ -111,8 +118,23 @@ void attention(
 ) {
     constexpr int BLOCK_DIM = 128;
     dim3 grid(seq_len, num_heads);
-    // Shared: [cache_len] scores + [BLOCK_DIM] reduction temp
     size_t smem = ((size_t)cache_len + BLOCK_DIM) * sizeof(float);
+
+    if (smem > ATTN_MAX_SMEM) {
+        // Context too long for shared-memory attention — would need Flash Attention
+        throw std::runtime_error("[attention] context too long for shared-memory kernel: "
+                                 + std::to_string(cache_len) + " tokens");
+    }
+
+    // Unlock large shared memory (default cap is 48 KB; SM 8.7 supports up to 164 KB)
+    static bool smem_configured = false;
+    if (!smem_configured) {
+        cudaFuncSetAttribute(attn_kernel,
+                             cudaFuncAttributeMaxDynamicSharedMemorySize,
+                             ATTN_MAX_SMEM);
+        smem_configured = true;
+    }
+
     attn_kernel<<<grid, BLOCK_DIM, smem>>>(
         out, q, k_cache, v_cache,
         seq_len, cache_len, num_heads, num_kv_heads, head_dim, scale);
