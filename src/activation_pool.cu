@@ -25,14 +25,21 @@ void ActivationPool::init(const ModelConfig& config) {
     CUDA_CHECK(cudaMalloc(&buf_a_, buf_bytes));
     CUDA_CHECK(cudaMalloc(&buf_b_, buf_bytes));
 
-    // Scratch for attention scores, intermediate results
-    size_t scratch_bytes = (size_t)config.max_seq_len * config.intermediate_size * sizeof(__nv_bfloat16);
+    // Scratch: reused for QKV projections and FFN gate/up.
+    // QKV needs: seq * (q_dim + kv_dim + kv_dim) = seq * (2048+1024+1024) = seq * 4096
+    // FFN needs: seq * 2 * intermediate_size      = seq * 6144   (larger)
+    int scratch_dim = std::max(config.q_dim() + 2 * config.kv_dim(),
+                               2 * config.intermediate_size);
+    size_t scratch_bytes = (size_t)config.max_seq_len * scratch_dim * sizeof(__nv_bfloat16);
     CUDA_CHECK(cudaMalloc(&scratch_, scratch_bytes));
 
     // Logits buffer in fp32 for numerical stability
     CUDA_CHECK(cudaMalloc(&logits_, config.vocab_size * sizeof(float)));
 
-    std::cout << "[ActivationPool] Allocated "
-              << (2 * buf_bytes + scratch_bytes + config.vocab_size * 4) / (1024*1024)
-              << " MB GPU memory\n";
+    size_t logits_bytes = (size_t)config.vocab_size * sizeof(float);
+    size_t total = 2 * buf_bytes + scratch_bytes + logits_bytes;
+    std::cout << "[ActivationPool] ping-pong=" << (2*buf_bytes>>20) << " MB"
+              << "  scratch=" << (scratch_bytes>>20) << " MB"
+              << "  logits=" << (logits_bytes>>20) << " MB"
+              << "  total=" << (total>>20) << " MB\n";
 }

@@ -49,3 +49,12 @@ target_include_directories(test_loader PRIVATE include)
 
 add_executable(test_tokenizer tests/test_tokenizer.cpp src/model_loader.cpp src/tokenizer.cpp)
 target_include_directories(test_tokenizer PRIVATE include)
+
+add_executable(test_weights tests/test_weights.cpp src/model_loader.cpp src/weight_store.cu)
+target_include_directories(test_weights PRIVATE include)
+target_link_libraries(test_weights PRIVATE CUDA::cudart)
+
+add_executable(test_buffers tests/test_buffers.cpp src/model_loader.cpp
+               src/activation_pool.cu src/kv_cache.cu)
+target_include_directories(test_buffers PRIVATE include)
+target_link_libraries(test_buffers PRIVATE CUDA::cudart)
