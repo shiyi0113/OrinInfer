@@ -43,7 +43,7 @@ if(USE_CUBLAS)
     target_compile_definitions(qwen3-infer PRIVATE USE_CUBLAS=1)
 endif()
 
-# Tests (no CUDA dependency, run on host)
+# Tests
 add_executable(test_loader tests/test_loader.cpp src/model_loader.cpp)
 target_include_directories(test_loader PRIVATE include)
 

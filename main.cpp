@@ -8,7 +8,7 @@ void print_usage(const char* prog) {
               << "  model_dir: HF directory with config.json, model.safetensors, tokenizer.json\n\n"
               << "Options:\n"
               << "  -p <prompt>      Input prompt (default: interactive mode)\n"
-              << "  -n <max_tokens>  Max tokens to generate (default: 256)\n"
+              << "  -n <max_tokens>  Max tokens to generate (default: 2048)\n"
               << "  -t <temperature> Sampling temperature (default: 1.0)\n"
               << "  --greedy         Use greedy decoding (default)\n"
               << "  --top-p <value>  Use nucleus sampling\n"
