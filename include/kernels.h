@@ -88,6 +88,20 @@ void fused_silu_mul(
     int intermediate_size
 );
 
+// ── element-wise residual add (in-place: x += y) ─────────────
+void add(
+    __nv_bfloat16* x,
+    const __nv_bfloat16* y,
+    int n
+);
+
+// ── BF16 → FP32 conversion ───────────────────────────────────
+void bf16_to_fp32(
+    float* out,
+    const __nv_bfloat16* in,
+    int n
+);
+
 // ── softmax ──────────────────────────────────────────────────
 // In-place softmax along last dimension
 void softmax(
