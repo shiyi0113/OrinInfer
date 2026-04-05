@@ -18,8 +18,10 @@ public:
     // Decode single token id → string piece
     std::string decode_token(int32_t id) const;
 
-    // Apply chat template: wraps user message with <|im_start|>/<|im_end|>
-    std::vector<int32_t> apply_chat_template(const std::string& user_msg) const;
+    // Apply chat template: wraps user message with system + user + assistant turns.
+    // enable_thinking=false prefills an empty <think></think> to skip chain-of-thought.
+    std::vector<int32_t> apply_chat_template(const std::string& user_msg,
+                                              bool enable_thinking = false) const;
 
     int32_t bos_id()     const { return bos_id_; }
     int32_t eos_id()     const { return eos_id_; }

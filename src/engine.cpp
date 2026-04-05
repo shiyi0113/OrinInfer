@@ -50,8 +50,9 @@ void Engine::init(const std::string& model_dir) {
     std::cout << "[Engine] Init complete in " << init_ms << " ms\n";
 }
 
-std::string Engine::generate(const std::string& prompt, GenerateConfig gen_config) {
-    auto prompt_tokens = tokenizer_->encode(prompt);
+// Internal: run prefill + decode given pre-tokenized prompt ids.
+std::string Engine::run_generation(const std::vector<int32_t>& prompt_tokens,
+                                    GenerateConfig gen_config) {
     int prompt_len = static_cast<int>(prompt_tokens.size());
 
     if (prompt_len == 0) return "";
@@ -126,10 +127,16 @@ done:
     return tokenizer_->decode(output_tokens);
 }
 
+std::string Engine::generate(const std::string& prompt, GenerateConfig gen_config) {
+    // Raw text prompt: encode directly (no chat template)
+    return run_generation(tokenizer_->encode(prompt), gen_config);
+}
+
 std::string Engine::chat(const std::string& user_message, GenerateConfig config) {
-    auto tokens = tokenizer_->apply_chat_template(user_message);
-    std::string prompt = tokenizer_->decode(tokens);
-    return generate(prompt, config);
+    // Apply chat template to get token ids directly — avoids decode→encode roundtrip
+    // which would silently drop special tokens (id >= 151643).
+    auto tokens = tokenizer_->apply_chat_template(user_message, /*enable_thinking=*/false);
+    return run_generation(tokens, config);
 }
 
 void Engine::print_info() const {

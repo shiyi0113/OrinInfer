@@ -366,9 +366,16 @@ std::string Tokenizer::decode_token(int32_t id) const {
 }
 
 // ── apply_chat_template ────────────────────────────────────────
-// Qwen3 chat format:
-//   <|im_start|>user\n{message}<|im_end|>\n<|im_start|>assistant\n
-std::vector<int32_t> Tokenizer::apply_chat_template(const std::string& user_msg) const {
+// Qwen3 chat format (non-thinking mode):
+//   <|im_start|>system\n{sys}<|im_end|>\n
+//   <|im_start|>user\n{message}<|im_end|>\n
+//   <|im_start|>assistant\n<think>\n\n</think>\n
+//
+// The empty <think>\n\n</think> block tells Qwen3 to skip chain-of-thought
+// and produce a direct answer. Without it the model enters thinking mode
+// and uses the entire context budget on internal reasoning.
+std::vector<int32_t> Tokenizer::apply_chat_template(const std::string& user_msg,
+                                                      bool enable_thinking) const {
     std::vector<int32_t> ids;
 
     auto push = [&](int32_t id) { ids.push_back(id); };
@@ -377,12 +384,26 @@ std::vector<int32_t> Tokenizer::apply_chat_template(const std::string& user_msg)
         ids.insert(ids.end(), toks.begin(), toks.end());
     };
 
+    // System turn
+    push(im_start_id_);
+    push_str("system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.");
+    push(im_end_id_);
+    push_str("\n");
+
+    // User turn
     push(im_start_id_);
     push_str("user\n" + user_msg);
     push(im_end_id_);
     push_str("\n");
+
+    // Assistant turn prefix
     push(im_start_id_);
     push_str("assistant\n");
+
+    // Suppress chain-of-thought by prefilling an empty think block
+    if (!enable_thinking) {
+        push_str("<think>\n\n</think>\n");
+    }
 
     return ids;
 }
