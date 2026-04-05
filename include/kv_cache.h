@@ -1,6 +1,6 @@
 #pragma once
 #include "config.h"
-#include <cuda_fp16.h>
+#include <cuda_bf16.h>
 #include <cstdint>
 #include <vector>
 
@@ -16,8 +16,8 @@ public:
     void init(const ModelConfig& config);
 
     // Get K/V buffer pointers for a specific layer
-    half* k(int layer) { return k_bufs_[layer]; }
-    half* v(int layer) { return v_bufs_[layer]; }
+    __nv_bfloat16* k(int layer) { return k_bufs_[layer]; }
+    __nv_bfloat16* v(int layer) { return v_bufs_[layer]; }
 
     // Current sequence position (where to write next)
     int pos() const { return pos_; }
@@ -38,8 +38,8 @@ public:
     int kv_dim()     const { return kv_dim_; }
 
 private:
-    std::vector<half*> k_bufs_;   // [num_layers]
-    std::vector<half*> v_bufs_;   // [num_layers]
+    std::vector<__nv_bfloat16*> k_bufs_;   // [num_layers]
+    std::vector<__nv_bfloat16*> v_bufs_;   // [num_layers]
     int max_seq_len_ = 0;
     int kv_dim_      = 0;
     int pos_         = 0;

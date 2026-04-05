@@ -1,5 +1,6 @@
 #include "weight_store.h"
 #include <cuda_runtime.h>
+#include <cuda_bf16.h>
 #include <iostream>
 #include <stdexcept>
 
@@ -13,10 +14,10 @@ WeightStore::~WeightStore() {
     for (auto* p : all_allocs_) if (p) cudaFree(p);
 }
 
-half* WeightStore::alloc_and_copy(const TensorInfo* tensor) {
+__nv_bfloat16* WeightStore::alloc_and_copy(const TensorInfo* tensor) {
     if (!tensor) throw std::runtime_error("Missing tensor");
     size_t bytes = tensor->byte_size;
-    half* d_ptr = nullptr;
+    __nv_bfloat16* d_ptr = nullptr;
     CUDA_CHECK(cudaMalloc(&d_ptr, bytes));
     CUDA_CHECK(cudaMemcpy(d_ptr, tensor->data, bytes, cudaMemcpyHostToDevice));
     all_allocs_.push_back(d_ptr);
@@ -25,14 +26,11 @@ half* WeightStore::alloc_and_copy(const TensorInfo* tensor) {
 
 void WeightStore::load(const ModelLoader& loader, const ModelConfig& config) {
     std::cout << "[WeightStore] Loading weights to GPU...\n";
-    size_t total_bytes = 0;
 
-    // Embedding (safetensors key)
-    auto* emb = loader.get_tensor("model.embed_tokens.weight");
-    embedding_ = alloc_and_copy(emb);
-    total_bytes += emb->byte_size;
+    // Embedding
+    embedding_ = alloc_and_copy(loader.get_tensor("model.embed_tokens.weight"));
 
-    // Per-layer weights (safetensors naming convention)
+    // Per-layer weights
     layers_.resize(config.num_layers);
     for (int i = 0; i < config.num_layers; i++) {
         std::string p = "model.layers." + std::to_string(i);
@@ -49,15 +47,14 @@ void WeightStore::load(const ModelLoader& loader, const ModelConfig& config) {
         L.gate_proj       = alloc_and_copy(loader.get_tensor(p + ".mlp.gate_proj.weight"));
         L.up_proj         = alloc_and_copy(loader.get_tensor(p + ".mlp.up_proj.weight"));
         L.down_proj       = alloc_and_copy(loader.get_tensor(p + ".mlp.down_proj.weight"));
-
-        for (auto* t : {L.input_layernorm, L.q_proj, L.q_norm, L.k_proj, L.k_norm,
-                        L.v_proj, L.o_proj, L.post_attn_norm, L.gate_proj, L.up_proj, L.down_proj}) {
-            // byte counting would need stored sizes; skip for now
-        }
     }
 
     // Final norm
     final_norm_ = alloc_and_copy(loader.get_tensor("model.norm.weight"));
+
+    // LM head (separate tensor in safetensors despite tie_word_embeddings=true)
+    auto* lmh = loader.get_tensor("lm_head.weight");
+    lm_head_  = lmh ? alloc_and_copy(lmh) : embedding_;
 
     std::cout << "[WeightStore] " << all_allocs_.size() << " tensors loaded to GPU\n";
 }

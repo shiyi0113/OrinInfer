@@ -14,7 +14,7 @@
 //   Same but with NxN score matrix per head, causal mask
 
 namespace kernels {
-void attention(half* out, const half* q, const half* k_cache, const half* v_cache,
+void attention(__nv_bfloat16* out, const __nv_bfloat16* q, const __nv_bfloat16* k_cache, const __nv_bfloat16* v_cache,
                int seq_len, int cache_len, int num_heads, int num_kv_heads,
                int head_dim, float scale) {
     // TODO: Implement

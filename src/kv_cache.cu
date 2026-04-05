@@ -18,7 +18,7 @@ void KVCache::init(const ModelConfig& config) {
     max_seq_len_ = config.max_seq_len;
     kv_dim_ = config.kv_dim();
 
-    size_t buf_bytes = (size_t)max_seq_len_ * kv_dim_ * sizeof(half);
+    size_t buf_bytes = (size_t)max_seq_len_ * kv_dim_ * sizeof(__nv_bfloat16);
 
     k_bufs_.resize(config.num_layers);
     v_bufs_.resize(config.num_layers);

@@ -25,10 +25,10 @@ public:
 
 private:
     // Run one transformer layer
-    void transformer_layer(int layer_idx, half* x, int seq_len, int start_pos);
+    void transformer_layer(int layer_idx, __nv_bfloat16* x, int seq_len, int start_pos);
 
     // Final: rmsnorm → lm_head projection
-    float* lm_head_proj(half* x, int seq_len);
+    float* lm_head_proj(__nv_bfloat16* x, int seq_len);
 
     ModelConfig        config_;
     const WeightStore* weights_ = nullptr;
@@ -36,11 +36,11 @@ private:
     KVCache*           cache_   = nullptr;
 
     // Temporary buffers (pointers into ActivationPool scratch)
-    half* q_buf_    = nullptr;
-    half* k_buf_    = nullptr;
-    half* v_buf_    = nullptr;
-    half* attn_out_ = nullptr;
-    half* gate_buf_ = nullptr;
-    half* up_buf_   = nullptr;
-    half* residual_ = nullptr;
+    __nv_bfloat16* q_buf_    = nullptr;
+    __nv_bfloat16* k_buf_    = nullptr;
+    __nv_bfloat16* v_buf_    = nullptr;
+    __nv_bfloat16* attn_out_ = nullptr;
+    __nv_bfloat16* gate_buf_ = nullptr;
+    __nv_bfloat16* up_buf_   = nullptr;
+    __nv_bfloat16* residual_ = nullptr;
 };

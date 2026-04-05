@@ -1,6 +1,7 @@
 #include "kernels.h"
+#include <cuda_bf16.h>
 
-__global__ void embedding_kernel(half* out, const half* table,
+__global__ void embedding_kernel(__nv_bfloat16* out, const __nv_bfloat16* table,
                                   const int32_t* ids, int hidden_size) {
     int token_idx = blockIdx.x;
     int dim_idx   = threadIdx.x + blockIdx.y * blockDim.x;
@@ -11,7 +12,7 @@ __global__ void embedding_kernel(half* out, const half* table,
 }
 
 namespace kernels {
-void embedding(half* out, const half* table, const int32_t* token_ids,
+void embedding(__nv_bfloat16* out, const __nv_bfloat16* table, const int32_t* token_ids,
                int seq_len, int hidden_size) {
     dim3 grid(seq_len, (hidden_size + 255) / 256);
     dim3 block(256);

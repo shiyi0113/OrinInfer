@@ -20,13 +20,13 @@ ActivationPool::~ActivationPool() {
 void ActivationPool::init(const ModelConfig& config) {
     // Main buffer size: max_seq_len * max(hidden_size, q_dim, intermediate_size)
     int max_dim = std::max({config.hidden_size, config.q_dim(), config.intermediate_size});
-    size_t buf_bytes = (size_t)config.max_seq_len * max_dim * sizeof(half);
+    size_t buf_bytes = (size_t)config.max_seq_len * max_dim * sizeof(__nv_bfloat16);
 
     CUDA_CHECK(cudaMalloc(&buf_a_, buf_bytes));
     CUDA_CHECK(cudaMalloc(&buf_b_, buf_bytes));
 
     // Scratch for attention scores, intermediate results
-    size_t scratch_bytes = (size_t)config.max_seq_len * config.intermediate_size * sizeof(half);
+    size_t scratch_bytes = (size_t)config.max_seq_len * config.intermediate_size * sizeof(__nv_bfloat16);
     CUDA_CHECK(cudaMalloc(&scratch_, scratch_bytes));
 
     // Logits buffer in fp32 for numerical stability

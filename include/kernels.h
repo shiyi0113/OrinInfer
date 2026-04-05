@@ -1,5 +1,5 @@
 #pragma once
-#include <cuda_fp16.h>
+#include <cuda_bf16.h>
 #include <cstdint>
 
 // All kernel functions take raw pointers + dimensions.
@@ -12,8 +12,8 @@ namespace kernels {
 // ── embedding lookup ─────────────────────────────────────────
 // out[seq_len, hidden_size] = table[token_ids[i], :]
 void embedding(
-    half* out,
-    const half* table,       // [vocab_size, hidden_size]
+    __nv_bfloat16* out,
+    const __nv_bfloat16* table,       // [vocab_size, hidden_size]
     const int32_t* token_ids,// [seq_len]
     int seq_len,
     int hidden_size
@@ -22,9 +22,9 @@ void embedding(
 // ── RMS normalization ────────────────────────────────────────
 // out[seq_len, dim] = rmsnorm(x[seq_len, dim], weight[dim], eps)
 void rmsnorm(
-    half* out,
-    const half* x,
-    const half* weight,      // [dim]
+    __nv_bfloat16* out,
+    const __nv_bfloat16* x,
+    const __nv_bfloat16* weight,      // [dim]
     int seq_len,
     int dim,
     float eps
@@ -34,8 +34,8 @@ void rmsnorm(
 // Apply RoPE in-place to q[seq_len, num_heads, head_dim]
 //                      and k[seq_len, num_kv_heads, head_dim]
 void rope(
-    half* q,
-    half* k,
+    __nv_bfloat16* q,
+    __nv_bfloat16* k,
     int seq_len,
     int num_heads,
     int num_kv_heads,
@@ -49,9 +49,9 @@ void rope(
 // When M=1, internally dispatches to optimized GEMV kernel
 // When M>1, dispatches to GEMM (or cuBLAS)
 void matmul(
-    half* C,
-    const half* A,           // [M, K]
-    const half* B,           // [N, K] (row-major, transposed multiply)
+    __nv_bfloat16* C,
+    const __nv_bfloat16* A,           // [M, K]
+    const __nv_bfloat16* B,           // [N, K] (row-major, transposed multiply)
     int M, int N, int K
 );
 
@@ -62,10 +62,10 @@ void matmul(
 // v_cache: [cache_len, num_kv_heads, head_dim]
 // out:    [seq_len, num_heads, head_dim]
 void attention(
-    half* out,
-    const half* q,
-    const half* k_cache,
-    const half* v_cache,
+    __nv_bfloat16* out,
+    const __nv_bfloat16* q,
+    const __nv_bfloat16* k_cache,
+    const __nv_bfloat16* v_cache,
     int seq_len,             // 1 for decode, N for prefill
     int cache_len,           // total valid KV entries
     int num_heads,
@@ -81,9 +81,9 @@ void attention(
 // Step 1 (call separately): gate = matmul(x, gate_proj), up = matmul(x, up_proj)
 // Step 2 (this kernel):     out = SiLU(gate) * up   (element-wise, in-place possible)
 void fused_silu_mul(
-    half* out,
-    const half* gate,        // [seq_len, intermediate_size]
-    const half* up,          // [seq_len, intermediate_size]
+    __nv_bfloat16* out,
+    const __nv_bfloat16* gate,        // [seq_len, intermediate_size]
+    const __nv_bfloat16* up,          // [seq_len, intermediate_size]
     int seq_len,
     int intermediate_size
 );

@@ -18,7 +18,7 @@ void Model::init(const ModelConfig& config,
 
 float* Model::forward(const int32_t* d_token_ids, int seq_len, int start_pos) {
     // ── 1. Embedding lookup ──────────────────────────────
-    half* x = pool_->input_buf();
+    __nv_bfloat16* x = pool_->input_buf();
     kernels::embedding(x, weights_->embedding(), d_token_ids,
                        seq_len, config_.hidden_size);
 
@@ -32,7 +32,7 @@ float* Model::forward(const int32_t* d_token_ids, int seq_len, int start_pos) {
     return lm_head_proj(x, seq_len);
 }
 
-void Model::transformer_layer(int layer_idx, half* x, int seq_len, int start_pos) {
+void Model::transformer_layer(int layer_idx, __nv_bfloat16* x, int seq_len, int start_pos) {
     auto& L = weights_->layer(layer_idx);
     int H   = config_.hidden_size;
     int QD  = config_.q_dim();
@@ -40,12 +40,12 @@ void Model::transformer_layer(int layer_idx, half* x, int seq_len, int start_pos
     int IM  = config_.intermediate_size;
     int HD  = config_.head_dim;
 
-    half* scratch = pool_->scratch();
+    __nv_bfloat16* scratch = pool_->scratch();
 
     // ── Attention block ──────────────────────────────────
 
     // 1. Input LayerNorm
-    half* normed = pool_->output_buf();
+    __nv_bfloat16* normed = pool_->output_buf();
     kernels::rmsnorm(normed, x, L.input_layernorm, seq_len, H, config_.rms_norm_eps);
 
     // 2. Q/K/V projections (matmul auto-dispatches GEMM vs GEMV)
@@ -60,12 +60,12 @@ void Model::transformer_layer(int layer_idx, half* x, int seq_len, int start_pos
     // 3. QK-Norm (Qwen3 specific: RMSNorm on each head before RoPE)
     // Apply per-head: q_buf[seq_len, num_heads, head_dim] normed by q_norm[head_dim]
     for (int h = 0; h < config_.num_heads; h++) {
-        half* q_head = q_buf_ + h * HD;
+        __nv_bfloat16* q_head = q_buf_ + h * HD;
         kernels::rmsnorm(q_head, q_head, L.q_norm, seq_len, HD, config_.rms_norm_eps);
         // TODO: stride handling — heads are interleaved, need proper offset
     }
     for (int h = 0; h < config_.num_kv_heads; h++) {
-        half* k_head = k_buf_ + h * HD;
+        __nv_bfloat16* k_head = k_buf_ + h * HD;
         kernels::rmsnorm(k_head, k_head, L.k_norm, seq_len, HD, config_.rms_norm_eps);
     }
 
@@ -88,7 +88,7 @@ void Model::transformer_layer(int layer_idx, half* x, int seq_len, int start_pos
                        HD, 1.0f / sqrtf((float)HD));
 
     // 7. Output projection
-    half* attn_proj = pool_->output_buf();
+    __nv_bfloat16* attn_proj = pool_->output_buf();
     kernels::matmul(attn_proj, attn_out_, L.o_proj, seq_len, H, QD);
 
     // 8. Residual add: x = x + attn_proj
@@ -110,16 +110,16 @@ void Model::transformer_layer(int layer_idx, half* x, int seq_len, int start_pos
     kernels::fused_silu_mul(gate_buf_, gate_buf_, up_buf_, seq_len, IM);
 
     // 12. Down projection
-    half* ffn_out = pool_->output_buf();
+    __nv_bfloat16* ffn_out = pool_->output_buf();
     kernels::matmul(ffn_out, gate_buf_, L.down_proj, seq_len, H, IM);
 
     // 13. Residual add: x = x + ffn_out
     // TODO: element-wise add kernel
 }
 
-float* Model::lm_head_proj(half* x, int seq_len) {
+float* Model::lm_head_proj(__nv_bfloat16* x, int seq_len) {
     // Final RMSNorm
-    half* normed = pool_->output_buf();
+    __nv_bfloat16* normed = pool_->output_buf();
     kernels::rmsnorm(normed, x, weights_->final_norm(),
                      seq_len, config_.hidden_size, config_.rms_norm_eps);
 
@@ -127,13 +127,13 @@ float* Model::lm_head_proj(half* x, int seq_len) {
     // Only need last token's logits for generation
     // TODO: For decode (seq_len=1), just matmul the single vector
     //       For prefill, only matmul the last row
-    half* last_hidden = normed + (size_t)(seq_len - 1) * config_.hidden_size;
+    __nv_bfloat16* last_hidden = normed + (size_t)(seq_len - 1) * config_.hidden_size;
     float* logits = pool_->logits();
 
     // matmul: [1, hidden] x [vocab, hidden]^T → [1, vocab]
     // Result needs to be fp32 for numerical stability in sampler
     // TODO: Implement fp16→fp32 matmul variant, or matmul then cast
-    kernels::matmul((half*)logits, last_hidden, weights_->lm_head(),
+    kernels::matmul((__nv_bfloat16*)logits, last_hidden, weights_->lm_head(),
                     1, config_.vocab_size, config_.hidden_size);
     // TODO: Cast result to fp32
 
