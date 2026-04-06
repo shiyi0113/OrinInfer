@@ -3,6 +3,8 @@
 #include <iostream>
 #include <stdexcept>
 #include <unistd.h>
+#include <sys/mman.h>  // 引入 mmap
+#include <sys/stat.h>  // 引入 fstat
 
 #define CUDA_CHECK(call) do { \
     cudaError_t err = call; \
@@ -11,44 +13,50 @@
 } while(0)
 
 WeightStore::~WeightStore() {
-    if (d_managed_pool_) cudaFree(d_managed_pool_);
+    if (mapped_addr_) {
+        cudaHostUnregister(mapped_addr_);
+        munmap(mapped_addr_, mapped_size_);
+    }
 }
 
 void WeightStore::load(const ModelLoader& loader, const ModelConfig& config) {
-    std::cout << "[WeightStore] Starting Single-Shot Direct IO Loading...\n";
-
-    // 1. 探明整个数据块的物理总长度
-    size_t total_data_bytes = 0;
-    for (const auto& name : loader.tensor_names()) {
-        const auto* t = loader.get_tensor(name);
-        size_t end_pos = t->offset + t->byte_size;
-        if (end_pos > total_data_bytes) {
-            total_data_bytes = end_pos; // 找到最末尾的字节位置
-        }
-    }
-
-    // 2. 申请唯一的一块连续内存
-    CUDA_CHECK(cudaMallocManaged(&d_managed_pool_, total_data_bytes));
-
-    // 3. 终极奥义：仅发起 1 次 pread 系统调用，一口气吞入 1.5GB
     int fd = loader.fd();
     size_t base_file_offset = loader.data_offset();
-    
-    std::cout << "  -> Executing bulk read of " << (total_data_bytes >> 20) << " MB...\n";
-    ssize_t bytes_read = pread(fd, d_managed_pool_, total_data_bytes, base_file_offset);
-    if (bytes_read != (ssize_t)total_data_bytes) {
-        throw std::runtime_error("Bulk pread failed!");
+
+    // 1. 获取整个文件的真实大小
+    struct stat sb;
+    if (fstat(fd, &sb) == -1) {
+        throw std::runtime_error("fstat failed!");
+    }
+    mapped_size_ = sb.st_size;
+
+    std::cout << "  -> Mapping file of " << (mapped_size_ >> 20) << " MB...\n";
+
+    // 2. 执行 mmap，从文件头(offset=0)开始映射
+    // 使用 MAP_POPULATE 强制提前触发缺页中断，消除推理时的延迟。
+    mapped_addr_ = mmap(nullptr, mapped_size_, PROT_READ, MAP_SHARED | MAP_POPULATE, fd, 0);
+    if (mapped_addr_ == MAP_FAILED) {
+        throw std::runtime_error("mmap failed!");
     }
 
-    // 4. 零成本切分指针：根据每个张量在 Safetensors 里的原生偏移量，直接定位
+    // 3. 将映射的系统内存注册给 CUDA 
+    CUDA_CHECK(cudaHostRegister(mapped_addr_, mapped_size_, cudaHostRegisterReadOnly));
+
+    // 4. 获取 GPU 视角的设备指针
+    void* d_ptr = nullptr;
+    CUDA_CHECK(cudaHostGetDevicePointer(&d_ptr, mapped_addr_, 0));
+
+    // 5. 定位到实际权重数据的起始基地址 (绕过 Safetensors Header)
+    char* base_data_ptr = static_cast<char*>(d_ptr) + base_file_offset;
+
+    // 6. 零成本切分指针
     auto load_tensor = [&](const std::string& name) -> __nv_bfloat16* {
         auto* t = loader.get_tensor(name);
         if (!t) throw std::runtime_error("[WeightStore] missing tensor: " + name);
-        // 直接在基地址上加上原生 offset
-        return reinterpret_cast<__nv_bfloat16*>(static_cast<char*>(d_managed_pool_) + t->offset);
+        return reinterpret_cast<__nv_bfloat16*>(base_data_ptr + t->offset);
     };
 
-    // --- 组装结构体（保持不变） ---
+    // --- 组装结构体---
     embedding_ = load_tensor("model.embed_tokens.weight");
 
     layers_.resize(config.num_layers);

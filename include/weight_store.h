@@ -46,6 +46,6 @@ private:
     __nv_bfloat16* lm_head_    = nullptr;
     std::vector<LayerWeights> layers_;
     
-    // 统一内存池基地址
-    void* d_managed_pool_ = nullptr;
+    void* mapped_addr_ = nullptr; 
+    size_t mapped_size_ = 0;
 };
