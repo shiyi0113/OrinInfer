@@ -3,6 +3,7 @@
 #include <iostream>
 #include <chrono>
 #include <stdexcept>
+#include <nvtx3/nvToolsExt.h>
 
 #define CUDA_CHECK(call) do { \
     cudaError_t err = call; \
@@ -30,15 +31,18 @@ void Engine::init(const std::string& model_dir) {
     // 2. Build tokenizer from parsed vocab/merges (host-only)
     tokenizer_ = new Tokenizer(loader_->tokenizer_data());
 
+    nvtxRangePushA("weights_to_gpu"); 
     // 3. cudaMemcpy all weights to GPU (one-time bulk transfer)
     weights_.load(*loader_, config_);
-
+    nvtxRangePop();
+    nvtxRangePushA("activation_alloc"); 
     // 4. Pre-allocate GPU activation buffers
     pool_.init(config_);
-
+    nvtxRangePop();
+    nvtxRangePushA("kv_cache_alloc"); 
     // 5. Pre-allocate GPU KV cache ring buffers
     cache_.init(config_);
-
+    nvtxRangePop();
     // 6. Wire model
     model_.init(config_, weights_, pool_, cache_);
 

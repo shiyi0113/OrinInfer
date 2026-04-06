@@ -54,7 +54,9 @@ public:
     // e.g. "model.embed_tokens.weight", "model.layers.0.self_attn.q_proj.weight"
     const TensorInfo*     get_tensor(const std::string& name) const;
     std::vector<std::string> tensor_names() const;
-
+    
+    int fd() const { return st_fd_; }
+    size_t data_offset() const { return st_data_offset_; }  
 private:
     // ── Parsing steps ────────────────────────────────────
     void parse_config(const std::string& path);

@@ -20,9 +20,9 @@ namespace {
 
 struct JsonValue {
     enum Type { NUL, BOOL, NUMBER, STRING, ARRAY, OBJECT } type = NUL;
-    double                                        num = 0;
-    bool                                          boolean = false;
-    std::string                                   str;
+    double                                         num = 0;
+    bool                                           boolean = false;
+    std::string                                    str;
     std::vector<JsonValue>                         arr;
     std::vector<std::pair<std::string, JsonValue>> obj;
 
@@ -220,7 +220,7 @@ void ModelLoader::parse_config(const std::string& path) {
     config_.num_kv_heads      = get_int("num_key_value_heads", 8);
     config_.head_dim          = get_int("head_dim", 128);
     config_.intermediate_size = get_int("intermediate_size", 3072);
-    config_.max_seq_len       = std::min(get_int("max_position_embeddings", 40960), 32768);
+    config_.max_seq_len       = std::min(get_int("max_position_embeddings", 40960), 4096);
     config_.rms_norm_eps      = get_float("rms_norm_eps", 1e-6f);
     config_.rope_theta        = get_float("rope_theta", 1000000.0f);
     config_.tie_embeddings    = get_bool("tie_word_embeddings", true);

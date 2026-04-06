@@ -40,6 +40,7 @@ public:
 private:
     std::vector<__nv_bfloat16*> k_bufs_;   // [num_layers]
     std::vector<__nv_bfloat16*> v_bufs_;   // [num_layers]
+    void* pool_base_ = nullptr;
     int max_seq_len_ = 0;
     int kv_dim_      = 0;
     int pos_         = 0;

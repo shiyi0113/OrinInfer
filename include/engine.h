@@ -33,8 +33,7 @@ public:
 
 private:
     void init(const std::string& model_dir);
-    std::string run_generation(const std::vector<int32_t>& prompt_tokens,
-                               GenerateConfig gen_config);
+    std::string run_generation(const std::vector<int32_t>& prompt_tokens, GenerateConfig gen_config);
 
     ModelConfig     config_;
     ModelLoader*    loader_    = nullptr;

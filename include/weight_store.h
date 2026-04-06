@@ -32,12 +32,20 @@ public:
     const __nv_bfloat16* lm_head()    const { return lm_head_; }
     const LayerWeights& layer(int i) const { return layers_[i]; }
 
-private:
-    __nv_bfloat16* alloc_and_copy(const TensorInfo* tensor);
+// private:
+//     __nv_bfloat16* alloc_and_copy(const TensorInfo* tensor);
 
+//     __nv_bfloat16* embedding_  = nullptr;
+//     __nv_bfloat16* final_norm_ = nullptr;
+//     __nv_bfloat16* lm_head_    = nullptr;
+//     std::vector<LayerWeights> layers_;
+//     std::vector<void*> all_allocs_;
+private:
     __nv_bfloat16* embedding_  = nullptr;
     __nv_bfloat16* final_norm_ = nullptr;
     __nv_bfloat16* lm_head_    = nullptr;
     std::vector<LayerWeights> layers_;
-    std::vector<void*> all_allocs_;
+    
+    // 统一内存池基地址
+    void* d_managed_pool_ = nullptr;
 };
