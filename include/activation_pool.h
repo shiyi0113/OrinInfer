@@ -28,6 +28,7 @@ private:
     __nv_bfloat16*  buf_a_    = nullptr;
     __nv_bfloat16*  buf_b_    = nullptr;
     __nv_bfloat16*  scratch_  = nullptr;
-    float* logits_   = nullptr;   // fp32 for numerical stability
+    void* pool_base_ = nullptr; 
+    float* logits_   = nullptr;
     bool   flip_     = false;
 };
