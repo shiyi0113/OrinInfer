@@ -33,33 +33,32 @@ int main(int argc, char* argv[]) {
               << (pool.input_buf() == b ? "OK" : "BUG") << "\n";
     pool.reset();
 
-    // ── KVCache ───────────────────────────────────────────
+    // ── KVCache (Paged) ───────────────────────────────────
     KVCache cache;
     cache.init(cfg);
 
-    std::cout << "\n=== KVCache ===\n";
-    std::cout << "pos=0, len=0: " << (cache.pos()==0 && cache.len()==0 ? "OK":"BUG") << "\n";
+    std::cout << "\n=== KVCache (Paged) ===\n";
+    std::cout << "block_size=" << cache.block_size() << "\n";
 
-    // Check all layer pointers
+    // Check all layer pool pointers are non-null
     bool all_ok = true;
     for (int i = 0; i < cfg.num_layers; i++) {
-        if (!cache.k(i) || !cache.v(i)) { all_ok = false; break; }
+        if (!cache.k_pool(i) || !cache.v_pool(i)) { all_ok = false; break; }
     }
-    std::cout << "all " << cfg.num_layers << " layer KV ptrs: " << (all_ok?"OK":"NULL found") << "\n";
+    std::cout << "all " << cfg.num_layers << " layer KV pools: " << (all_ok?"OK":"NULL found") << "\n";
+    std::cout << "block_table (device): " << (cache.d_block_table() ? "OK" : "NULL") << "\n";
 
-    // Ring buffer write index
-    cache.advance(10);
-    std::cout << "advance(10): pos=" << cache.pos()
-              << " len=" << cache.len()
-              << " write_idx=" << cache.write_idx() << "\n";
+    // prepare() allocates pages and uploads block table
+    cache.prepare(10, 0);
+    std::cout << "prepare(10, 0): OK\n";
 
-    cache.advance(cfg.max_seq_len);  // wrap around
-    std::cout << "after wrap:  pos=" << cache.pos()
-              << " len=" << cache.len()    // should be capped at max_seq_len
-              << " write_idx=" << cache.write_idx() << "\n";
+    cache.prepare(1, 10);
+    std::cout << "prepare(1, 10): OK\n";
 
+    // reset frees all pages
     cache.reset();
-    std::cout << "after reset: pos=" << cache.pos() << " len=" << cache.len() << "\n";
+    cache.prepare(1, 0);
+    std::cout << "reset + prepare(1, 0): OK\n";
 
     // ── Final GPU memory report ───────────────────────────
     size_t free_b = 0, total_b = 0;

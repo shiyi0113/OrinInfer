@@ -18,6 +18,9 @@ void Model::init(const ModelConfig& config,
 }
 
 float* Model::forward(const int32_t* d_token_ids, int seq_len, int start_pos) {
+    // ── 0. Allocate pages for the incoming tokens ────────────
+    cache_->prepare(seq_len, start_pos);
+
     // ── 1. Embedding lookup → buf_a (residual stream x) ─────
     __nv_bfloat16* x = pool_->input_buf();  // buf_a: persistent residual stream
     kernels::embedding(x, weights_->embedding(), d_token_ids,
@@ -69,47 +72,18 @@ void Model::transformer_layer(int layer_idx, __nv_bfloat16* x, int seq_len, int 
                   config_.num_heads, config_.num_kv_heads,
                   HD, start_pos, config_.rope_theta);
 
-    // 5. Write K/V to KV cache ring buffer
-    {
-        int write_pos        = cache_->write_idx();
-        int max_sl           = cache_->max_seq_len();
-        int tokens_to_wrap   = max_sl - write_pos;
+    // 5. Scatter K/V into paged pool (pages were allocated in Model::forward)
+    cache_->scatter_kv(layer_idx, k_buf, v_buf, seq_len, start_pos);
 
-        if (seq_len <= tokens_to_wrap) {
-            // Fits without wrapping
-            cudaMemcpy(cache_->k(layer_idx) + (size_t)write_pos * KVD, k_buf,
-                       (size_t)seq_len * KVD * sizeof(__nv_bfloat16),
-                       cudaMemcpyDeviceToDevice);
-            cudaMemcpy(cache_->v(layer_idx) + (size_t)write_pos * KVD, v_buf,
-                       (size_t)seq_len * KVD * sizeof(__nv_bfloat16),
-                       cudaMemcpyDeviceToDevice);
-        } else {
-            // Ring-buffer wrap: two copies
-            int first  = tokens_to_wrap;
-            int second = seq_len - first;
-            cudaMemcpy(cache_->k(layer_idx) + (size_t)write_pos * KVD, k_buf,
-                       (size_t)first * KVD * sizeof(__nv_bfloat16),
-                       cudaMemcpyDeviceToDevice);
-            cudaMemcpy(cache_->k(layer_idx), k_buf + (size_t)first * KVD,
-                       (size_t)second * KVD * sizeof(__nv_bfloat16),
-                       cudaMemcpyDeviceToDevice);
-            cudaMemcpy(cache_->v(layer_idx) + (size_t)write_pos * KVD, v_buf,
-                       (size_t)first * KVD * sizeof(__nv_bfloat16),
-                       cudaMemcpyDeviceToDevice);
-            cudaMemcpy(cache_->v(layer_idx), v_buf + (size_t)first * KVD,
-                       (size_t)second * KVD * sizeof(__nv_bfloat16),
-                       cudaMemcpyDeviceToDevice);
-        }
-    }
-
-    // 6. Attention: Q (scratch) × KV cache → buf_b
-    //    cache_len includes the tokens just written above
-    int cache_len = cache_->len() + seq_len;
-    kernels::attention(buf_b, q_buf,
-                       cache_->k(layer_idx), cache_->v(layer_idx),
-                       seq_len, cache_len,
-                       config_.num_heads, config_.num_kv_heads,
-                       HD, 1.0f / sqrtf((float)HD));
+    // 6. Paged attention: Q × paged KV cache → buf_b
+    int cache_len = start_pos + seq_len;
+    kernels::paged_attention(buf_b, q_buf,
+                             cache_->k_pool(layer_idx), cache_->v_pool(layer_idx),
+                             cache_->d_block_table(),
+                             seq_len, cache_len,
+                             config_.num_heads, config_.num_kv_heads,
+                             HD, 1.0f / sqrtf((float)HD),
+                             cache_->block_size());
 
     // 7. Output projection: buf_b (attn out) → scratch (q/k/v no longer needed)
     kernels::matmul(scratch, buf_b, L.o_proj, seq_len, H, QD);

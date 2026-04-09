@@ -55,23 +55,26 @@ void matmul(
     int M, int N, int K
 );
 
-// ── attention ────────────────────────────────────────────────
-// Grouped-Query Attention with KV cache
-// q:      [seq_len, num_heads, head_dim]
-// k_cache: [cache_len, num_kv_heads, head_dim]
-// v_cache: [cache_len, num_kv_heads, head_dim]
-// out:    [seq_len, num_heads, head_dim]
-void attention(
+// ── paged attention ───────────────────────────────────────────
+// Grouped-Query Attention over a paged KV pool.
+// q:          [seq_len, num_heads, head_dim]
+// k_pool:     [total_pages * block_size, num_kv_heads, head_dim]
+// v_pool:     [total_pages * block_size, num_kv_heads, head_dim]
+// block_table: device int32[*], maps logical_block → physical_page
+// out:        [seq_len, num_heads, head_dim]
+void paged_attention(
     __nv_bfloat16* out,
     const __nv_bfloat16* q,
-    const __nv_bfloat16* k_cache,
-    const __nv_bfloat16* v_cache,
+    const __nv_bfloat16* k_pool,
+    const __nv_bfloat16* v_pool,
+    const int32_t* block_table,
     int seq_len,             // 1 for decode, N for prefill
-    int cache_len,           // total valid KV entries
+    int cache_len,           // start_pos + seq_len (total logical positions)
     int num_heads,
     int num_kv_heads,
     int head_dim,
-    float scale              // 1/sqrt(head_dim)
+    float scale,             // 1/sqrt(head_dim)
+    int block_size           // tokens per page (KVCache::BLOCK_SIZE)
 );
 
 // ── fused SwiGLU ─────────────────────────────────────────────
