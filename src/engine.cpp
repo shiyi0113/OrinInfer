@@ -56,26 +56,30 @@ std::string Engine::run_generation(const std::vector<int32_t>& prompt_tokens,
     int prompt_len = static_cast<int>(prompt_tokens.size());
 
     if (prompt_len == 0) return "";
-    if (prompt_len > cache_.max_tokens()) {
-        std::cerr << "[Engine] Prompt too long (" << prompt_len
-                  << " > cache capacity " << cache_.max_tokens() << " tokens)\n";
-        return "";
-    }
 
     cache_.reset();
     pool_.reset();
 
     Sampler sampler(config_.vocab_size, gen_config.sampler);
 
-    CUDA_CHECK(cudaMemcpy(d_tokens_, prompt_tokens.data(),
-                          prompt_len * sizeof(int32_t),
-                          cudaMemcpyHostToDevice));
-
     auto t_start = std::chrono::high_resolution_clock::now();
 
-    // ── Prefill ──────────────────────────────────────────
-    float* logits = model_.forward(d_tokens_, prompt_len, 0);
-    cache_.advance(prompt_len);
+    // ── Chunked Prefill ───────────────────────────────────
+    // chunk_size = KV pool capacity: prompts that fit are processed in one pass;
+    // longer prompts are split into multiple passes and the sink+window cache
+    // evicts old tokens automatically between chunks.
+    const int chunk_size = cache_.max_tokens();
+    float* logits = nullptr;
+
+    for (int pos = 0; pos < prompt_len; pos += chunk_size) {
+        int chunk = std::min(chunk_size, prompt_len - pos);
+        CUDA_CHECK(cudaMemcpy(d_tokens_,
+                              prompt_tokens.data() + pos,
+                              chunk * sizeof(int32_t),
+                              cudaMemcpyHostToDevice));
+        logits = model_.forward(d_tokens_, chunk, pos);
+    }
+
     int32_t next_token = sampler.sample(logits);
 
     auto t_prefill = std::chrono::high_resolution_clock::now();
@@ -147,7 +151,7 @@ void Engine::print_info() const {
               << "║  Hidden:       " << config_.hidden_size << "                  ║\n"
               << "║  Heads (Q/KV): " << config_.num_heads << "/" << config_.num_kv_heads << "                  ║\n"
               << "║  Vocab:        " << config_.vocab_size << "                ║\n"
-              << "║  Max seq:      " << config_.max_seq_len << "                  ║\n"
+              << "║  KV pool:      " << cache_.max_tokens() << " tok            ║\n"
               << "║  Format:       safetensors (FP16)    ║\n"
               << "╚══════════════════════════════════════╝\n";
 }

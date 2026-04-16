@@ -4,6 +4,13 @@
 #include <cublas_v2.h>
 #endif
 
+// Defined in kernels/gemm_cute.cu
+// Returns false if M/N/K are not tile-aligned; caller should fallback.
+extern bool launch_gemm_cute(__nv_bfloat16* C,
+                              const __nv_bfloat16* A,
+                              const __nv_bfloat16* B,
+                              int M, int N, int K);
+
 // Auto-dispatch: M=1 → hand-written GEMV, M>1 → cuBLAS GEMM
 // C[M,N] = A[M,K] * B[N,K]^T
 
@@ -60,11 +67,14 @@ void matmul(__nv_bfloat16* C, const __nv_bfloat16* A, const __nv_bfloat16* B,
                      CUBLAS_COMPUTE_32F,
                      CUBLAS_GEMM_DEFAULT_TENSOR_OP);
 #else
-        // Fallback: GEMV-per-row (slow, correctness only)
-        for (int m = 0; m < M; m++) {
-            int threads = (K < 256) ? K : 256;
-            gemv_kernel<<<N, threads, threads * sizeof(float)>>>(
-                C + m * N, A + m * K, B, N, K);
+        // Try custom CuTe GEMM (requires tile-aligned M/N/K)
+        if (!launch_gemm_cute(C, A, B, M, N, K)) {
+            // Fallback for non-aligned dims: per-row GEMV (slow, correctness only)
+            for (int m = 0; m < M; m++) {
+                int threads = (K < 256) ? K : 256;
+                gemv_kernel<<<N, threads, threads * sizeof(float)>>>(
+                    C + m * N, A + m * K, B, N, K);
+            }
         }
 #endif
     }
