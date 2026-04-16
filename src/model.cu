@@ -18,8 +18,7 @@ void Model::init(const ModelConfig& config,
 }
 
 float* Model::forward(const int32_t* d_token_ids, int seq_len, int start_pos) {
-    // ── 0. Allocate pages for the incoming tokens ────────────
-    cache_->prepare(seq_len, start_pos);
+    // ── 0. (no page allocation needed for contiguous cache) ──
 
     // ── 1. Embedding lookup → buf_a (residual stream x) ─────
     __nv_bfloat16* x = pool_->input_buf();  // buf_a: persistent residual stream
@@ -72,18 +71,17 @@ void Model::transformer_layer(int layer_idx, __nv_bfloat16* x, int seq_len, int 
                   config_.num_heads, config_.num_kv_heads,
                   HD, start_pos, config_.rope_theta);
 
-    // 5. Scatter K/V into paged pool (pages were allocated in Model::forward)
-    cache_->scatter_kv(layer_idx, k_buf, v_buf, seq_len, start_pos);
+    // 5. Append K/V into contiguous pool at start_pos
+    cache_->append_kv(layer_idx, k_buf, v_buf, seq_len, start_pos);
 
-    // 6. Paged attention: Q × paged KV cache → buf_b
+    // 6. Attention: Q × sink+window KV cache → buf_b
     int cache_len = start_pos + seq_len;
-    kernels::paged_attention(buf_b, q_buf,
-                             cache_->k_pool(layer_idx), cache_->v_pool(layer_idx),
-                             cache_->d_block_table(),
-                             seq_len, cache_len,
-                             config_.num_heads, config_.num_kv_heads,
-                             HD, 1.0f / sqrtf((float)HD),
-                             cache_->block_size());
+    kernels::attention(buf_b, q_buf,
+                       cache_->k_pool(layer_idx), cache_->v_pool(layer_idx),
+                       seq_len, cache_len,
+                       config_.num_heads, config_.num_kv_heads,
+                       HD, 1.0f / sqrtf((float)HD),
+                       cache_->n_sink(), cache_->window_size());
 
     // 7. Output projection: buf_b (attn out) → scratch (q/k/v no longer needed)
     kernels::matmul(scratch, buf_b, L.o_proj, seq_len, H, QD);

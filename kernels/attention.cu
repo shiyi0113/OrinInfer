@@ -3,67 +3,88 @@
 #include <stdexcept>
 #include <string>
 
-// Paged GQA attention kernel.
+// Sink + Sliding-Window GQA attention kernel.
 //
 // Grid : (seq_len, num_heads) — one block per (query_token, query_head).
 // Block: BLOCK_DIM threads.
-// Dynamic shared memory: (cache_len + BLOCK_DIM) floats.
+// Dynamic shared memory layout:
+//   scores[n_sink + window_size]   — QK dot products (only first `total` used)
+//   rdbuf [BLOCK_DIM]              — tree-reduction scratch
 //
-// Causal rule: query token qi (0-indexed within current batch) may attend to
-//   logical KV positions 0 .. cache_len - seq_len + qi   (inclusive).
-//   attend_len = cache_len - seq_len + qi + 1
+// For query token qi, the set of attended KV positions is:
+//   Sink   : logical 0 .. sink_len-1          (physical slot = logical pos)
+//   Window : logical oldest_w .. attend_pos   (physical slot via ring formula)
 //
-// KV pool layout per layer: [total_pages * block_size, num_kv_heads, head_dim]
-// Q layout:                 [seq_len, num_heads, head_dim]
-// Output layout:            [seq_len, num_heads, head_dim]
+// attend_pos  = cache_len - seq_len + qi   (causal mask upper bound, inclusive)
+// sink_len    = min(n_sink, attend_pos + 1)
+// window_len  = min(max(attend_pos + 1 - n_sink, 0), window_size)
+// oldest_w    = attend_pos + 1 - window_len   (oldest logical pos in window)
+// win_offset  = (oldest_w - n_sink) % window_size  (ring buffer start slot offset)
 //
-// The block_table maps logical_block → physical_page.
-// Physical slot for logical position j:
-//   page = block_table[j / block_size]
-//   slot = j % block_size
-//   row  = page * block_size + slot
-__global__ void paged_attn_kernel(
+// Physical slot for window token w (0 = oldest, window_len-1 = newest):
+//   n_sink + (win_offset + w) % window_size
+
+__global__ void attn_kernel(
     __nv_bfloat16*       out,
     const __nv_bfloat16* q,
     const __nv_bfloat16* k_pool,
     const __nv_bfloat16* v_pool,
-    const int32_t*       block_table,
     int seq_len, int cache_len,
     int num_heads, int num_kv_heads,
     int head_dim, float scale,
-    int block_size
+    int n_sink, int window_size
 ) {
     int qi   = blockIdx.x;
     int h    = blockIdx.y;
-    int kv_h = h / (num_heads / num_kv_heads);   // GQA head mapping
+    int kv_h = h / (num_heads / num_kv_heads);
 
-    int attend_len = cache_len - seq_len + qi + 1;
+    int attend_pos = cache_len - seq_len + qi;
+    int sink_len   = min(n_sink, attend_pos + 1);
+    int window_len = min(max(attend_pos + 1 - n_sink, 0), window_size);
+    int total      = sink_len + window_len;
 
-    // Shared memory: scores[cache_len] | rdbuf[BLOCK_DIM]
+    // Oldest logical position in the window that is still stored.
+    // Physical ring offset: where the oldest window token sits in the ring.
+    int oldest_w   = attend_pos + 1 - window_len;   // only used when window_len > 0
+    int win_offset = (window_len > 0) ? (oldest_w - n_sink) % window_size : 0;
+
+    // Shared memory: scores[n_sink + window_size] | rdbuf[BLOCK_DIM]
     extern __shared__ float sdata[];
     float* scores = sdata;
-    float* rdbuf  = sdata + cache_len;
+    float* rdbuf  = sdata + n_sink + window_size;
 
     const __nv_bfloat16* q_ptr = q + ((size_t)qi * num_heads + h) * head_dim;
 
     // ── Step 1: QK dot products ──────────────────────────────────────────────
-    for (int j = threadIdx.x; j < attend_len; j += blockDim.x) {
-        int page = block_table[j / block_size];
-        int slot = j % block_size;
+
+    // 1a. Sink tokens (physical slot == logical pos, no ring logic)
+    for (int s = threadIdx.x; s < sink_len; s += blockDim.x) {
         const __nv_bfloat16* k_ptr =
-            k_pool + ((size_t)(page * block_size + slot) * num_kv_heads + kv_h) * head_dim;
-        float s = 0.0f;
+            k_pool + ((size_t)s * num_kv_heads + kv_h) * head_dim;
+        float dot = 0.f;
         for (int d = 0; d < head_dim; d++)
-            s += __bfloat162float(q_ptr[d]) * __bfloat162float(k_ptr[d]);
-        scores[j] = s * scale;
+            dot += __bfloat162float(q_ptr[d]) * __bfloat162float(k_ptr[d]);
+        scores[s] = dot * scale;
+    }
+
+    // 1b. Window tokens (physical slot via ring formula)
+    for (int w = threadIdx.x; w < window_len; w += blockDim.x) {
+        int phys = n_sink + (win_offset + w) % window_size;
+        const __nv_bfloat16* k_ptr =
+            k_pool + ((size_t)phys * num_kv_heads + kv_h) * head_dim;
+        float dot = 0.f;
+        for (int d = 0; d < head_dim; d++)
+            dot += __bfloat162float(q_ptr[d]) * __bfloat162float(k_ptr[d]);
+        scores[sink_len + w] = dot * scale;
     }
     __syncthreads();
 
-    // ── Step 2: softmax ──────────────────────────────────────────────────────
+    // ── Step 2: softmax over scores[0..total-1] ──────────────────────────────
+
     // 2a. max reduction
     float local_max = -FLT_MAX;
-    for (int j = threadIdx.x; j < attend_len; j += blockDim.x)
-        local_max = fmaxf(local_max, scores[j]);
+    for (int i = threadIdx.x; i < total; i += blockDim.x)
+        local_max = fmaxf(local_max, scores[i]);
     rdbuf[threadIdx.x] = local_max;
     __syncthreads();
     for (int s = blockDim.x >> 1; s > 0; s >>= 1) {
@@ -74,10 +95,10 @@ __global__ void paged_attn_kernel(
     float max_val = rdbuf[0];
 
     // 2b. exp + sum
-    float local_sum = 0.0f;
-    for (int j = threadIdx.x; j < attend_len; j += blockDim.x) {
-        float e = expf(scores[j] - max_val);
-        scores[j] = e;
+    float local_sum = 0.f;
+    for (int i = threadIdx.x; i < total; i += blockDim.x) {
+        float e = expf(scores[i] - max_val);
+        scores[i] = e;
         local_sum += e;
     }
     rdbuf[threadIdx.x] = local_sum;
@@ -86,68 +107,71 @@ __global__ void paged_attn_kernel(
         if (threadIdx.x < s) rdbuf[threadIdx.x] += rdbuf[threadIdx.x + s];
         __syncthreads();
     }
-    float inv_sum = 1.0f / rdbuf[0];
+    float inv_sum = 1.f / rdbuf[0];
 
     // 2c. normalize
-    for (int j = threadIdx.x; j < attend_len; j += blockDim.x)
-        scores[j] *= inv_sum;
+    for (int i = threadIdx.x; i < total; i += blockDim.x)
+        scores[i] *= inv_sum;
     __syncthreads();
 
     // ── Step 3: weighted sum of V ────────────────────────────────────────────
     __nv_bfloat16* out_ptr = out + ((size_t)qi * num_heads + h) * head_dim;
     for (int d = threadIdx.x; d < head_dim; d += blockDim.x) {
-        float val = 0.0f;
-        for (int j = 0; j < attend_len; j++) {
-            int page = block_table[j / block_size];
-            int slot = j % block_size;
+        float val = 0.f;
+
+        // 3a. Sink tokens
+        for (int s = 0; s < sink_len; s++) {
             const __nv_bfloat16* v_ptr =
-                v_pool + ((size_t)(page * block_size + slot) * num_kv_heads + kv_h) * head_dim;
-            val += scores[j] * __bfloat162float(v_ptr[d]);
+                v_pool + ((size_t)s * num_kv_heads + kv_h) * head_dim;
+            val += scores[s] * __bfloat162float(v_ptr[d]);
         }
+
+        // 3b. Window tokens
+        for (int w = 0; w < window_len; w++) {
+            int phys = n_sink + (win_offset + w) % window_size;
+            const __nv_bfloat16* v_ptr =
+                v_pool + ((size_t)phys * num_kv_heads + kv_h) * head_dim;
+            val += scores[sink_len + w] * __bfloat162float(v_ptr[d]);
+        }
+
         out_ptr[d] = __float2bfloat16(val);
     }
 }
 
 namespace kernels {
 
-// SM 8.7 (Jetson Orin) supports up to 164 KB shared memory per block.
-// scores[cache_len] + rdbuf[BLOCK_DIM] in float32.
-// 160 KB headroom ≈ 40832 tokens of context.
-static constexpr size_t ATTN_MAX_SMEM = 163840;  // 160 KB
-
-void paged_attention(
+void attention(
     __nv_bfloat16* out,
     const __nv_bfloat16* q,
     const __nv_bfloat16* k_pool,
     const __nv_bfloat16* v_pool,
-    const int32_t* block_table,
     int seq_len, int cache_len,
     int num_heads, int num_kv_heads,
     int head_dim, float scale,
-    int block_size
+    int n_sink, int window_size
 ) {
     constexpr int BLOCK_DIM = 128;
-    size_t smem = ((size_t)cache_len + BLOCK_DIM) * sizeof(float);
 
-    if (smem > ATTN_MAX_SMEM)
-        throw std::runtime_error(
-            "[paged_attention] context too long for shared-memory kernel: "
-            + std::to_string(cache_len) + " tokens");
+    // Shared memory: scores[n_sink + window_size] + rdbuf[BLOCK_DIM]
+    size_t smem = ((size_t)(n_sink + window_size) + BLOCK_DIM) * sizeof(float);
 
     static bool smem_configured = false;
     if (!smem_configured) {
-        cudaFuncSetAttribute(paged_attn_kernel,
+        // SM 8.7 (Jetson Orin) allows up to 164 KB dynamic shared memory.
+        // With default n_sink=4, window=2044: smem = (2048+128)*4 = 8.7 KB — no issue.
+        cudaFuncSetAttribute(attn_kernel,
                              cudaFuncAttributeMaxDynamicSharedMemorySize,
-                             ATTN_MAX_SMEM);
+                             163840);
         smem_configured = true;
     }
 
     dim3 grid(seq_len, num_heads);
-    paged_attn_kernel<<<grid, BLOCK_DIM, smem>>>(
-        out, q, k_pool, v_pool, block_table,
+    attn_kernel<<<grid, BLOCK_DIM, smem>>>(
+        out, q, k_pool, v_pool,
         seq_len, cache_len,
         num_heads, num_kv_heads,
-        head_dim, scale, block_size);
+        head_dim, scale,
+        n_sink, window_size);
 }
 
 } // namespace kernels

@@ -55,26 +55,28 @@ void matmul(
     int M, int N, int K
 );
 
-// ── paged attention ───────────────────────────────────────────
-// Grouped-Query Attention over a paged KV pool.
-// q:          [seq_len, num_heads, head_dim]
-// k_pool:     [total_pages * block_size, num_kv_heads, head_dim]
-// v_pool:     [total_pages * block_size, num_kv_heads, head_dim]
-// block_table: device int32[*], maps logical_block → physical_page
-// out:        [seq_len, num_heads, head_dim]
-void paged_attention(
+// ── attention (Sink + Sliding-Window GQA) ─────────────────────
+// q:      [seq_len, num_heads, head_dim]
+// k_pool: [n_sink + window_size, num_kv_heads, head_dim]
+// v_pool: [n_sink + window_size, num_kv_heads, head_dim]
+// out:    [seq_len, num_heads, head_dim]
+//
+// Physical slot layout (must match KVCache::append_kv):
+//   pos < n_sink   → slot = pos
+//   pos >= n_sink  → slot = n_sink + (pos - n_sink) % window_size
+void attention(
     __nv_bfloat16* out,
     const __nv_bfloat16* q,
     const __nv_bfloat16* k_pool,
     const __nv_bfloat16* v_pool,
-    const int32_t* block_table,
     int seq_len,             // 1 for decode, N for prefill
-    int cache_len,           // start_pos + seq_len (total logical positions)
+    int cache_len,           // start_pos + seq_len (total logical positions written)
     int num_heads,
     int num_kv_heads,
     int head_dim,
     float scale,             // 1/sqrt(head_dim)
-    int block_size           // tokens per page (KVCache::BLOCK_SIZE)
+    int n_sink,              // number of sink tokens
+    int window_size          // ring buffer capacity
 );
 
 // ── fused SwiGLU ─────────────────────────────────────────────

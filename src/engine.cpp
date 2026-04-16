@@ -3,7 +3,6 @@
 #include <iostream>
 #include <chrono>
 #include <stdexcept>
-#include <nvtx3/nvToolsExt.h>
 
 #define CUDA_CHECK(call) do { \
     cudaError_t err = call; \
@@ -25,36 +24,26 @@ void Engine::init(const std::string& model_dir) {
     auto t0 = std::chrono::high_resolution_clock::now();
 
     // 1. Parse config.json + mmap safetensors + parse tokenizer.json
-    nvtxRangePushA("modelloader_init");
     loader_ = new ModelLoader(model_dir);
     config_ = loader_->config();
-    nvtxRangePop();
 
-    nvtxRangePushA("tokenizer_init");
     // 2. Build tokenizer from parsed vocab/merges (host-only)
     tokenizer_ = new Tokenizer(loader_->tokenizer_data());
-    nvtxRangePop();
 
-    nvtxRangePushA("weights_to_gpu"); 
     // 3. cudaMemcpy all weights to GPU (one-time bulk transfer)
     weights_.load(*loader_, config_);
-    nvtxRangePop();
 
-    nvtxRangePushA("activation_alloc"); 
     // 4. Pre-allocate GPU activation buffers
     pool_.init(config_);
-    nvtxRangePop();
 
-    nvtxRangePushA("kv_cache_alloc"); 
     // 5. Pre-allocate GPU KV cache ring buffers
     cache_.init(config_);
-    nvtxRangePop();
-    
+
     // 6. Wire model
     model_.init(config_, weights_, pool_, cache_);
 
-    // 7. Device buffer for input token ids
-    CUDA_CHECK(cudaMalloc(&d_tokens_, config_.max_seq_len * sizeof(int32_t)));
+    // 7. Device buffer for input token ids (sized to max prefill = pool capacity)
+    CUDA_CHECK(cudaMalloc(&d_tokens_, cache_.max_tokens() * sizeof(int32_t)));
 
     auto t1 = std::chrono::high_resolution_clock::now();
     double init_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
@@ -67,9 +56,9 @@ std::string Engine::run_generation(const std::vector<int32_t>& prompt_tokens,
     int prompt_len = static_cast<int>(prompt_tokens.size());
 
     if (prompt_len == 0) return "";
-    if (prompt_len >= config_.max_seq_len) {
+    if (prompt_len > cache_.max_tokens()) {
         std::cerr << "[Engine] Prompt too long (" << prompt_len
-                  << " >= " << config_.max_seq_len << ")\n";
+                  << " > cache capacity " << cache_.max_tokens() << " tokens)\n";
         return "";
     }
 

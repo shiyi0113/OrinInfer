@@ -33,32 +33,27 @@ int main(int argc, char* argv[]) {
               << (pool.input_buf() == b ? "OK" : "BUG") << "\n";
     pool.reset();
 
-    // ── KVCache (Paged) ───────────────────────────────────
+    // ── KVCache (Sink+Window) ─────────────────────────────
     KVCache cache;
     cache.init(cfg);
 
-    std::cout << "\n=== KVCache (Paged) ===\n";
-    std::cout << "block_size=" << cache.block_size() << "\n";
+    std::cout << "\n=== KVCache (Sink+Window) ===\n";
+    std::cout << "n_sink="      << cache.n_sink()      << "\n";
+    std::cout << "window_size=" << cache.window_size() << "\n";
+    std::cout << "max_tokens="  << cache.max_tokens()  << "\n";
 
-    // Check all layer pool pointers are non-null
+    // Check all layer pool pointers are non-null and distinct
     bool all_ok = true;
     for (int i = 0; i < cfg.num_layers; i++) {
         if (!cache.k_pool(i) || !cache.v_pool(i)) { all_ok = false; break; }
+        if (cache.k_pool(i) == cache.v_pool(i))   { all_ok = false; break; }
     }
-    std::cout << "all " << cfg.num_layers << " layer KV pools: " << (all_ok?"OK":"NULL found") << "\n";
-    std::cout << "block_table (device): " << (cache.d_block_table() ? "OK" : "NULL") << "\n";
+    std::cout << "all " << cfg.num_layers << " layer K/V pools non-null & distinct: "
+              << (all_ok ? "OK" : "BUG") << "\n";
 
-    // prepare() allocates pages and uploads block table
-    cache.prepare(10, 0);
-    std::cout << "prepare(10, 0): OK\n";
-
-    cache.prepare(1, 10);
-    std::cout << "prepare(1, 10): OK\n";
-
-    // reset frees all pages
+    // reset() is a no-op but should not crash
     cache.reset();
-    cache.prepare(1, 0);
-    std::cout << "reset + prepare(1, 0): OK\n";
+    std::cout << "reset(): OK\n";
 
     // ── Final GPU memory report ───────────────────────────
     size_t free_b = 0, total_b = 0;
